@@ -1,0 +1,74 @@
+@model Woodlands_Prototype_Insy7315.Models.UserFormViewModel
+@using Woodlands_Prototype_Insy7315.Models
+@{
+    var editing = !string.IsNullOrWhiteSpace(Model.Id);
+    ViewData["Title"] = editing ? "Edit User" : "Add User";
+}
+
+<div class="max-w-2xl mx-auto px-4 py-10">
+    <h1 class="text-3xl font-bold text-brand-700 mb-6" style="font-family:var(--font-display);">@ViewData["Title"]</h1>
+    <div asp-validation-summary="ModelOnly" class="text-sm text-red-600 mb-4"></div>
+
+    <form asp-action="@(editing ? "EditUser" : "CreateUser")" asp-route-id="@Model.Id" method="post" class="bg-white border border-gray-100 rounded-xl shadow-sm p-6 space-y-5">
+        @Html.AntiForgeryToken()
+
+        <div>
+            <label asp-for="FullName" class="field-label"></label>
+            <input asp-for="FullName" class="field" />
+            <span asp-validation-for="FullName" class="text-xs text-red-600"></span>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-5">
+            <div>
+                <label asp-for="Email" class="field-label"></label>
+                <input asp-for="Email" class="field" />
+                <span asp-validation-for="Email" class="text-xs text-red-600"></span>
+            </div>
+            <div>
+                <label asp-for="PhoneNumber" class="field-label"></label>
+                <input asp-for="PhoneNumber" class="field" />
+            </div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-5">
+            <div>
+                <label asp-for="Role" class="field-label"></label>
+                <select asp-for="Role" class="field">
+                    @foreach (var role in IdentitySeederRoles.All)
+                    {
+                        <option value="@role">@role</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label asp-for="Branch" class="field-label"></label>
+                <select asp-for="Branch" class="field">
+                    <option value="">No branch</option>
+                    <option value="Soweto">Soweto</option>
+                    <option value="Roodepoort">Roodepoort</option>
+                    <option value="Randfontein">Randfontein</option>
+                </select>
+            </div>
+        </div>
+
+        <div>
+            <label asp-for="Password" class="field-label">@(editing ? "New Password (optional)" : "Password")</label>
+            <input asp-for="Password" class="field" />
+            <span asp-validation-for="Password" class="text-xs text-red-600"></span>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm">
+            <input asp-for="Active" />
+            Active account
+        </label>
+
+        <div class="bg-blue-50 text-blue-800 rounded-lg p-4 text-sm">
+            Only the Admin role can change account types. Public registration always creates Customer accounts.
+        </div>
+
+        <div class="flex gap-3">
+            <button type="submit" class="btn btn-secondary">Save User</button>
+            <a asp-action="Users" class="px-5 py-2.5 rounded-lg border border-gray-200 font-semibold">Cancel</a>
+        </div>
+    </form>
+</div>

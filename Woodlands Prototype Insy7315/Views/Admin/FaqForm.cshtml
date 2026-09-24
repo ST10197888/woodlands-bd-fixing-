@@ -1,0 +1,44 @@
+@model Woodlands_Prototype_Insy7315.Models.FaqFormViewModel
+@{
+    var editing = Model.Id != 0;
+    ViewData["Title"] = editing ? "Edit FAQ" : "Add FAQ";
+    var categories = new[] { "Materials", "Process", "Services", "Installation", "Trade", "Branches", "Warranty" };
+}
+
+<div class="max-w-2xl mx-auto px-4 py-10">
+    <h1 class="text-3xl font-bold text-brand-700 mb-6" style="font-family:var(--font-display);">@ViewData["Title"]</h1>
+    <div asp-validation-summary="ModelOnly" class="text-sm text-red-600 mb-4"></div>
+
+    <form asp-action="@(editing ? "EditFaq" : "CreateFaq")" asp-route-id="@Model.Id" method="post" class="bg-white border border-gray-100 rounded-xl shadow-sm p-6 space-y-5">
+        @Html.AntiForgeryToken()
+
+        <div>
+            <label asp-for="Category" class="field-label"></label>
+            <select asp-for="Category" class="field">
+                <option value="">Select category&hellip;</option>
+                @foreach (var c in categories)
+                {
+                    <option value="@c">@c</option>
+                }
+            </select>
+            <span asp-validation-for="Category" class="text-xs text-red-600"></span>
+        </div>
+
+        <div>
+            <label asp-for="Question" class="field-label"></label>
+            <input asp-for="Question" class="field" />
+            <span asp-validation-for="Question" class="text-xs text-red-600"></span>
+        </div>
+
+        <div>
+            <label asp-for="Answer" class="field-label"></label>
+            <textarea asp-for="Answer" rows="6" class="field"></textarea>
+            <span asp-validation-for="Answer" class="text-xs text-red-600"></span>
+        </div>
+
+        <div class="flex gap-3">
+            <button type="submit" class="btn btn-secondary">Save FAQ</button>
+            <a asp-action="Faqs" class="px-5 py-2.5 rounded-lg border border-gray-200 font-semibold">Cancel</a>
+        </div>
+    </form>
+</div>

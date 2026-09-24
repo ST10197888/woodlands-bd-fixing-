@@ -1,0 +1,64 @@
+@model IEnumerable<Woodlands_Prototype_Insy7315.Models.Product>
+@{
+    ViewData["Title"] = "Manage Products";
+}
+
+<div class="max-w-content mx-auto px-4 sm:px-6 lg:px-8 py-10">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div>
+            <h1 class="text-3xl font-bold text-brand-700" style="font-family:var(--font-display);">Products</h1>
+            <p class="text-sm text-gray-500 mt-1">Product CRUD is available to admins and branch managers.</p>
+        </div>
+        <a asp-action="CreateProduct" class="btn btn-secondary">Add Product</a>
+    </div>
+
+    <!-- Category filter pills -->
+    <div class="flex flex-wrap gap-2 mb-6">
+        <a asp-action="Products" class="px-4 py-2 rounded-full text-sm font-medium transition-all @(ViewBag.ActiveCategory == null ? "bg-brand-700 text-white shadow" : "bg-white text-brand-700 border border-line hover:border-brand-700/50")">
+            All
+        </a>
+        @foreach (var cat in (List<string>)ViewBag.Categories)
+        {
+            <a asp-action="Products" asp-route-category="@cat" class="px-4 py-2 rounded-full text-sm font-medium transition-all @(ViewBag.ActiveCategory == cat ? "bg-brand-700 text-white shadow" : "bg-white text-brand-700 border border-line hover:border-brand-700/50")">
+                @cat
+            </a>
+        }
+    </div>
+
+    <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-3 text-left">Title</th>
+                        <th class="px-4 py-3 text-left">Category</th>
+                        <th class="px-4 py-3 text-left">Price</th>
+                        <th class="px-4 py-3 text-left">Tag</th>
+                        <th class="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    @foreach (var product in Model)
+                    {
+                        <tr>
+                            <td class="px-4 py-3 font-medium">@product.Title</td>
+                            <td class="px-4 py-3 text-gray-500">@product.Category</td>
+                            <td class="px-4 py-3 text-gray-500">@product.DisplayPrice</td>
+                            <td class="px-4 py-3 text-gray-500">@product.Tag</td>
+                            <td class="px-4 py-3 text-right">
+                                <div class="inline-flex items-center gap-3">
+                                    <a asp-action="EditProduct" asp-route-id="@product.Id" class="text-brand-700 font-semibold">Edit</a>
+                                    <form asp-action="DeleteProduct" method="post" onsubmit="return confirm('Delete this product?');">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@product.Id" />
+                                        <button type="submit" class="text-accent font-semibold">Delete</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

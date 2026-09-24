@@ -1,0 +1,33 @@
+@model IEnumerable<Woodlands_Prototype_Insy7315.Models.Service>
+@{
+    ViewData["Title"] = "Manage Services";
+}
+
+<div class="max-w-content mx-auto px-4 sm:px-6 lg:px-8 py-10">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div>
+            <h1 class="text-3xl font-bold text-brand-700" style="font-family:var(--font-display);">Services</h1>
+            <p class="text-sm text-gray-500 mt-1">Admins and branch managers can manage services.</p>
+        </div>
+        <a asp-action="CreateService" class="btn btn-secondary">Add Service</a>
+    </div>
+
+    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+        @foreach (var service in Model)
+        {
+            <div class="bg-white border border-gray-100 rounded-xl shadow-sm p-5">
+                <h2 class="text-lg font-bold text-brand-700 display-2">@service.Name</h2>
+                <p class="text-sm text-gray-500 mt-2 min-h-12">@service.Description</p>
+                <p class="text-xs mt-3 @(service.IsActive ? "text-green-600" : "text-gray-400")">@(service.IsActive ? "Active" : "Inactive")</p>
+                <div class="flex items-center gap-4 mt-5">
+                    <a asp-action="EditService" asp-route-id="@service.Id" class="text-brand-700 font-semibold">Edit</a>
+                    <form asp-action="DeleteService" method="post" onsubmit="return confirm('Delete this service?');">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="id" value="@service.Id" />
+                        <button type="submit" class="text-accent font-semibold">Delete</button>
+                    </form>
+                </div>
+            </div>
+        }
+    </div>
+</div>

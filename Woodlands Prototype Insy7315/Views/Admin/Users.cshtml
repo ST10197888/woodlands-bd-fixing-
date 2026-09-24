@@ -1,0 +1,58 @@
+@model IEnumerable<Woodlands_Prototype_Insy7315.Controllers.AdminUserRowViewModel>
+@{
+    ViewData["Title"] = "User Accounts";
+}
+
+<div class="max-w-content mx-auto px-4 sm:px-6 lg:px-8 py-10">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div>
+            <h1 class="text-3xl font-bold text-brand-700" style="font-family:var(--font-display);">User Accounts</h1>
+            <p class="text-sm text-gray-500 mt-1">Only admins can manage roles and user accounts.</p>
+        </div>
+        <a asp-action="CreateUser" class="btn btn-secondary">Add User</a>
+    </div>
+
+    @if (TempData["AdminError"] != null)
+    {
+        <div class="mb-5 rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm">@TempData["AdminError"]</div>
+    }
+
+    <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-3 text-left">Name</th>
+                        <th class="px-4 py-3 text-left">Email</th>
+                        <th class="px-4 py-3 text-left">Role</th>
+                        <th class="px-4 py-3 text-left">Branch</th>
+                        <th class="px-4 py-3 text-left">Status</th>
+                        <th class="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                @foreach (var user in Model)
+                {
+                    <tr>
+                        <td class="px-4 py-3 font-medium">@user.FullName</td>
+                        <td class="px-4 py-3 text-gray-500">@user.Email</td>
+                        <td class="px-4 py-3">@user.Role</td>
+                        <td class="px-4 py-3 text-gray-500">@(user.Branch ?? "-")</td>
+                        <td class="px-4 py-3">@(user.Active ? "Active" : "Inactive")</td>
+                        <td class="px-4 py-3 text-right">
+                            <div class="inline-flex items-center gap-3">
+                                <a asp-action="EditUser" asp-route-id="@user.Id" class="text-brand-700 font-semibold">Edit</a>
+                                <form asp-action="DeleteUser" method="post" onsubmit="return confirm('Delete this account?');">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@user.Id" />
+                                    <button type="submit" class="text-accent font-semibold">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,56 @@
+@using Woodlands_Prototype_Insy7315.Models
+@{
+    ViewData["Title"] = "Dashboard";
+    var isAdmin = User.IsInRole(IdentitySeederRoles.Admin);
+    var isManager = User.IsInRole(IdentitySeederRoles.SowetoManager)
+        || User.IsInRole(IdentitySeederRoles.RoodepoortManager)
+        || User.IsInRole(IdentitySeederRoles.RandfonteinManager);
+    var role = isAdmin ? "Admin" : isManager ? "Branch Manager" : "Customer";
+}
+
+<div class="max-w-content mx-auto px-4 sm:px-6 lg:px-8 py-10">
+    <div class="mb-8">
+        <p class="text-sm text-gray-500">Logged in as @User.Identity?.Name</p>
+        <h1 class="text-3xl font-bold text-brand-700" style="font-family:var(--font-display);">@role Dashboard</h1>
+    </div>
+
+    @if (isAdmin || isManager)
+    {
+        <div class="grid md:grid-cols-2 gap-5">
+            <a asp-controller="Management" asp-action="Products" class="bg-white border border-gray-100 rounded-xl p-6 shadow-sm hover:shadow-md">
+                <h2 class="text-lg font-bold text-brand-700 display-2">Products</h2>
+                <p class="text-sm text-gray-500 mt-1">Create, edit, view and delete products.</p>
+            </a>
+            <a asp-controller="Management" asp-action="Services" class="bg-white border border-gray-100 rounded-xl p-6 shadow-sm hover:shadow-md">
+                <h2 class="text-lg font-bold text-brand-700 display-2">Services</h2>
+                <p class="text-sm text-gray-500 mt-1">Create, edit, view and delete services.</p>
+            </a>
+        </div>
+    }
+
+    @if (isAdmin)
+    {
+        <div class="grid md:grid-cols-2 gap-5 mt-5">
+            <a asp-controller="Admin" asp-action="Users" class="bg-white border border-gray-100 rounded-xl p-6 shadow-sm hover:shadow-md">
+                <h2 class="text-lg font-bold text-brand-700 display-2">User Accounts</h2>
+                <p class="text-sm text-gray-500 mt-1">Only admins can create, edit, change roles and delete accounts.</p>
+            </a>
+            <a asp-controller="Admin" asp-action="Testimonials" class="bg-white border border-gray-100 rounded-xl p-6 shadow-sm hover:shadow-md">
+                <h2 class="text-lg font-bold text-brand-700 display-2">Testimonials</h2>
+                <p class="text-sm text-gray-500 mt-1">Only admins can create, edit and delete testimonials.</p>
+            </a>
+            <a asp-controller="Admin" asp-action="Faqs" class="bg-white border border-gray-100 rounded-xl p-6 shadow-sm hover:shadow-md">
+                <h2 class="text-lg font-bold text-brand-700 display-2">FAQs</h2>
+                <p class="text-sm text-gray-500 mt-1">Only admins can create, edit and delete FAQs.</p>
+            </a>
+        </div>
+    }
+
+    @if (!isAdmin && !isManager)
+    {
+        <div class="bg-white border border-gray-100 rounded-xl p-6 shadow-sm">
+            <h2 class="text-lg font-bold text-brand-700 display-2">Customer Account</h2>
+            <p class="text-sm text-gray-500 mt-1">Your account is currently a Customer account. An admin can change your account type.</p>
+        </div>
+    }
+</div>
