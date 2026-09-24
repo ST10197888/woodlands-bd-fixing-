@@ -29,11 +29,13 @@
     <h1 class="text-3xl font-bold text-brand-700 mb-1" style="font-family:var(--font-display);">@ViewData["Title"]</h1>
     <p class="text-sm text-gray-500 mb-6">Fill in the details below the same way a customer will see them on the product page.</p>
 
-    <div asp-validation-summary="ModelOnly" class="text-sm text-red-600 mb-4"></div>
+@*     <div asp-validation-summary="All" class="text-sm text-red-600 mb-4"></div> *@
 
     <form asp-action="@(editing ? "EditProduct" : "CreateProduct")" asp-route-id="@Model.Id" method="post" class="bg-white border border-gray-100 rounded-xl shadow-sm p-6 space-y-8" id="product-form">
         @Html.AntiForgeryToken()
-        <input type="hidden" asp-for="Id" />
+        <input type="hidden" asp-for="Id" 
+               novalidate />
+        <div asp-validation-summary="All" class="alert alert-danger"></div>
 
         <!-- Live "what am I creating" summary -->
         <div class="flex items-center gap-3 rounded-lg border border-brand-700/15 bg-brand-700/5 px-4 py-3">
@@ -149,7 +151,7 @@
                         </button>
                         <input asp-for="Price" id="Price" class="flex-1 rounded-lg border border-gray-200 px-3 py-2.5" placeholder="e.g. R8,500" oninput="syncPricePreview()" />
                     </div>
-                    <input type="hidden" asp-for="IsFromPrice" id="IsFromPrice" />
+                    <input type="hidden" asp-for="IsFromPrice" id="IsFromPrice" value="@(Model.IsFromPrice ? "true" : "false")" />
                     <p class="text-xs text-gray-400 mt-1">Just the number/word here — no need to type "From" yourself. Click the <strong>From</strong> button to mark it as a starting price.</p>
                     <p class="text-xs font-medium text-brand-700 mt-1">Preview: <span id="price-preview">&mdash;</span></p>
                 </div>
@@ -189,11 +191,19 @@
 
 @section Scripts {
     <script>
-        // ---------------------------------------------------------------
-        // Everything below only rewrites the *hidden* Image / Gallery /
-        // Features / Finishes / Tag fields before submit — the controller
-        // and model on the server side are untouched.
-        // ---------------------------------------------------------------
+
+                    document.addEventListener('DOMContentLoaded', function () {
+            // Clear the "required" attribute from the hidden fields so partial saves work
+            document.querySelectorAll('input[type="hidden"]').forEach(function (input) {
+                input.removeAttribute('required');
+            });
+
+            // If the server rendered a validation summary with content, scroll to it
+            var summary = document.querySelector('.alert-danger');
+            if (summary && summary.textContent.trim().length > 0) {
+                summary.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        });
 
         var MAX_IMAGES = 5;
         var initialGallery = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(galleryUrls));
@@ -220,34 +230,41 @@
             document.getElementById('summary-category').textContent = checked ? checked.value : 'No category selected';
         }
 
-        // ---------- Price "From" toggle ----------
-        function toggleFrom() {
+        // Price "From" toggle 
+                function toggleFrom() {
             var hidden = document.getElementById('IsFromPrice');
-            var isOn = hidden.value.toLowerCase() === 'true';
+            var isOn = hidden.value === 'true';
             setFromState(!isOn);
         }
 
         function setFromState(isOn) {
-            document.getElementById('IsFromPrice').value = isOn ? 'true' : 'false';
+            var hidden = document.getElementById('IsFromPrice');
+            hidden.value = isOn ? 'true' : 'false'; 
 
             var btn = document.getElementById('from-toggle');
-            btn.classList.toggle('bg-brand-700', isOn);
-            btn.classList.toggle('text-white', isOn);
-            btn.classList.toggle('border-brand-700', isOn);
-            btn.classList.toggle('bg-white', !isOn);
-            btn.classList.toggle('text-brand-700', !isOn);
-            btn.classList.toggle('border-line', !isOn);
+            if (isOn) {
+                btn.classList.add('bg-brand-700', 'text-white', 'border-brand-700');
+                btn.classList.remove('bg-white', 'text-brand-700', 'border-line');
+            } else {
+                btn.classList.remove('bg-brand-700', 'text-white', 'border-brand-700');
+                btn.classList.add('bg-white', 'text-brand-700', 'border-line');
+            }
 
             syncPricePreview();
         }
 
         function syncPricePreview() {
-            var price = document.getElementById('Price').value.trim();
-            var isOn = document.getElementById('IsFromPrice').value.toLowerCase() === 'true';
+            var priceInput = document.getElementById('Price');
+            var hidden = document.getElementById('IsFromPrice');
+            if (!priceInput || !hidden) return;
+
+            var price = priceInput.value.trim();
+            var isOn = hidden.value === 'true';
             var preview = document.getElementById('price-preview');
+            if (!preview) return;
 
             if (!price) {
-                preview.textContent = '\u2014';
+                preview.textContent = '—';
             } else {
                 preview.textContent = isOn ? 'From ' + price : price;
             }

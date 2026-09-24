@@ -142,7 +142,7 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         }
 
         private static List<Claim> CreateClaims(
-            SupabaseAppUser user)
+            AppUser user)
         {
             return new List<Claim>
             {

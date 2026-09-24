@@ -6,11 +6,13 @@ namespace Woodlands_Prototype_Insy7315.Models
     {
         public string? Id { get; set; }
 
-        [Required]
+        [Required(ErrorMessage = "Category is required.")]
         public string Category { get; set; } = "";
 
-        [Required]
+        [Required(ErrorMessage = "Title is required.")]
         public string Title { get; set; } = "";
+
+
         public bool IsFromPrice { get; set; }
         public string Tagline { get; set; } = "";
         public string Description { get; set; } = "";

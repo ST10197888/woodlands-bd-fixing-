@@ -1,20 +1,20 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
 using Woodlands_Prototype_Insy7315.Models;
+using System.Text.Json;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
 {
     public class ServicesController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ServicesController> _logger;
+        private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public ServicesController(
-            SupabaseClient supabase,
+            IHttpClientFactory httpClientFactory,
             ILogger<ServicesController> logger)
         {
-            _supabase = supabase;
+            _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
 
@@ -22,65 +22,55 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.IsActive)
-                    .Order("name", PostgrestConstants.Ordering.Ascending)
-                    .Get();
+                var client = _httpClientFactory.CreateClient("NodeApi");
+                var response = await client.GetAsync("api/services");
 
-                var services = response.Models
-                    .Select(s => new Service
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        Description = s.Description,
-                        Image = s.Image,
-                        IsActive = s.IsActive
-                    })
-                    .ToList();
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var services = JsonSerializer.Deserialize<List<Service>>(json, _jsonOptions)
+                                   ?? new List<Service>();
 
-                return View(services);
+                    // Filter out inactive services (public page)
+                    services = services.Where(s => s.IsActive).ToList();
+
+                    return View(services);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading services from Supabase");
-
+                _logger.LogError(ex, "Error loading services from Node API");
                 TempData["Error"] = "Unable to load services.";
-                return View(new List<Service>());
             }
+
+            return View(new List<Service>());
         }
 
         public async Task<IActionResult> Details(int id)
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.Id == id)
-                    .Single();
+                var client = _httpClientFactory.CreateClient("NodeApi");
+                var response = await client.GetAsync("api/services");
 
-                if (response == null)
+                if (response.IsSuccessStatusCode)
                 {
-                    return NotFound();
+                    var json = await response.Content.ReadAsStringAsync();
+                    var services = JsonSerializer.Deserialize<List<Service>>(json, _jsonOptions)
+                                   ?? new List<Service>();
+
+                    var service = services.FirstOrDefault(s => s.Id == id);
+                    if (service == null) return NotFound();
+
+                    return View(service);
                 }
-
-                var service = new Service
-                {
-                    Id = response.Id,
-                    Name = response.Name,
-                    Description = response.Description,
-                    Image = response.Image,
-                    IsActive = response.IsActive
-                };
-
-                return View(service);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error loading service {ServiceId}", id);
-
-                return NotFound();
             }
+
+            return NotFound();
         }
     }
 }

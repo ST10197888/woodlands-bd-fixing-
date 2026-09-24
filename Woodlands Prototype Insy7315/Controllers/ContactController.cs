@@ -1,121 +1,80 @@
 using Microsoft.AspNetCore.Mvc;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
+using System.Text;
+using System.Text.Json;
 using Woodlands_Prototype_Insy7315.Models;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
 {
     public class ContactController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _http;
         private readonly ILogger<ContactController> _logger;
+        private readonly JsonSerializerOptions _json = new() { PropertyNameCaseInsensitive = true };
 
-        public ContactController(
-            SupabaseClient supabase,
-            ILogger<ContactController> logger)
+        public ContactController(IHttpClientFactory http, ILogger<ContactController> logger)
         {
-            _supabase = supabase;
+            _http = http;
             _logger = logger;
         }
 
         [HttpGet]
-        public async Task<IActionResult> Index(
-            string? service,
-            string? product,
-            string? productId)
+        public async Task<IActionResult> Index(string? service, string? product, string? productId)
         {
+            var services = new List<Service>();
+            Product? requestedProduct = null;
+
             try
             {
-                var servicesResponse = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.IsActive == true)
-                    .Order("name", PostgrestConstants.Ordering.Ascending)
-                    .Get();
+                var client = _http.CreateClient("NodeApi");
 
-                var services = servicesResponse.Models
-                    .Select(s => new Service
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        Description = s.Description,
-                        Image = s.Image,
-                        IsActive = s.IsActive
-                    })
-                    .ToList();
-
-                ViewBag.Services = services;
-
-                Product? requestedProduct = null;
-
-                if (!string.IsNullOrWhiteSpace(productId))
+                // Load services
+                var servicesRes = await client.GetAsync("api/services");
+                if (servicesRes.IsSuccessStatusCode)
                 {
-                    var productResponse = await _supabase
-                        .From<SupabaseProduct>()
-                        .Where(p => p.Id == productId)
-                        .Single();
-
-                    if (productResponse != null)
-                    {
-                        requestedProduct = new Product
-                        {
-                            Id = productResponse.Id,
-                            Category = productResponse.Category,
-                            Title = productResponse.Title,
-                            Tagline = productResponse.Tagline,
-                            Description = productResponse.Description,
-                            Image = productResponse.Image,
-                            GalleryJson = productResponse.Gallery ?? "[]",
-                            FeaturesJson = productResponse.Features ?? "[]",
-                            FinishesJson = productResponse.Finishes ?? "[]",
-                            LeadTime = productResponse.LeadTime,
-                            Tag = productResponse.Tag,
-                            Price = productResponse.Price
-                        };
-                    }
+                    var json = await servicesRes.Content.ReadAsStringAsync();
+                    services = JsonSerializer.Deserialize<List<Service>>(json, _json) ?? new();
+                    services = services.Where(s => s.IsActive).ToList();
                 }
 
-                ViewBag.RequestedProduct = requestedProduct;
-
-                var resolvedService = requestedProduct?.Category ?? service;
-                var resolvedProductTitle = requestedProduct?.Title ?? product;
-
-                var model = new ContactRequest
+                // Load requested product if ID was provided
+                if (!string.IsNullOrWhiteSpace(productId))
                 {
-                    Service = services.Any(s => s.Name == resolvedService)
-                        ? resolvedService!
-                        : "",
-
-                    Message = !string.IsNullOrWhiteSpace(resolvedProductTitle)
-                        ? $"I'm interested in the \"{resolvedProductTitle}\". "
-                        : "",
-
-                    ProductId = requestedProduct?.Id
-                };
-
-                return View(model);
+                    var prodRes = await client.GetAsync($"api/products/{productId}");
+                    if (prodRes.IsSuccessStatusCode)
+                    {
+                        var json = await prodRes.Content.ReadAsStringAsync();
+                        requestedProduct = JsonSerializer.Deserialize<Product>(json, _json);
+                    }
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading contact/quote page");
-
-                ViewBag.Services = new List<Service>();
-                ViewBag.RequestedProduct = null;
-
-                return View(new ContactRequest
-                {
-                    Service = service ?? "",
-                    Message = !string.IsNullOrWhiteSpace(product)
-                        ? $"I'm interested in the \"{product}\". "
-                        : "",
-                    ProductId = productId
-                });
+                _logger.LogError(ex, "Error loading contact page data");
             }
+
+            ViewBag.Services = services;
+            ViewBag.RequestedProduct = requestedProduct;
+
+            var resolvedService = requestedProduct?.Category ?? service;
+            var resolvedProductTitle = requestedProduct?.Title ?? product;
+
+            var model = new ContactRequest
+            {
+                Service = services.Any(s => s.Name == resolvedService) ? resolvedService! : "",
+                Message = !string.IsNullOrWhiteSpace(resolvedProductTitle)
+                    ? $"I'm interested in the \"{resolvedProductTitle}\". "
+                    : "",
+                ProductId = requestedProduct?.Id
+            };
+
+            return View(model);
         }
 
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> Index(ContactRequest request)
         {
+            // Block admin/manager users from submitting quotes
             if (User.IsInRole("Admin") ||
                 User.IsInRole("Manager (Soweto)") ||
                 User.IsInRole("Manager (Roodepoort)") ||
@@ -124,92 +83,77 @@ namespace Woodlands_Prototype_Insy7315.Controllers
                 return Forbid();
             }
 
+            // Reload services (in case of validation failure re-render)
+            var services = new List<Service>();
             try
             {
-                var servicesResponse = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.IsActive == true)
-                    .Order("name", PostgrestConstants.Ordering.Ascending)
-                    .Get();
-
-                ViewBag.Services = servicesResponse.Models
-                    .Select(s => new Service
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        Description = s.Description,
-                        Image = s.Image,
-                        IsActive = s.IsActive
-                    })
-                    .ToList();
+                var client = _http.CreateClient("NodeApi");
+                var servicesRes = await client.GetAsync("api/services");
+                if (servicesRes.IsSuccessStatusCode)
+                {
+                    var json = await servicesRes.Content.ReadAsStringAsync();
+                    services = JsonSerializer.Deserialize<List<Service>>(json, _json) ?? new();
+                    services = services.Where(s => s.IsActive).ToList();
+                }
+                ViewBag.Services = services;
 
                 if (!string.IsNullOrWhiteSpace(request.ProductId))
                 {
-                    var productResponse = await _supabase
-                        .From<SupabaseProduct>()
-                        .Where(p => p.Id == request.ProductId)
-                        .Single();
-
-                    if (productResponse != null)
+                    var prodRes = await client.GetAsync($"api/products/{request.ProductId}");
+                    if (prodRes.IsSuccessStatusCode)
                     {
-                        ViewBag.RequestedProduct = new Product
-                        {
-                            Id = productResponse.Id,
-                            Category = productResponse.Category,
-                            Title = productResponse.Title,
-                            Tagline = productResponse.Tagline,
-                            Description = productResponse.Description,
-                            Image = productResponse.Image,
-                            GalleryJson = productResponse.Gallery ?? "[]",
-                            FeaturesJson = productResponse.Features ?? "[]",
-                            FinishesJson = productResponse.Finishes ?? "[]",
-                            LeadTime = productResponse.LeadTime,
-                            Tag = productResponse.Tag,
-                            Price = productResponse.Price
-                        };
+                        var json = await prodRes.Content.ReadAsStringAsync();
+                        ViewBag.RequestedProduct = JsonSerializer.Deserialize<Product>(json, _json);
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reloading contact page data");
+            }
 
-                if (!ModelState.IsValid)
+            if (!ModelState.IsValid)
+            {
+                return View(request);
+            }
+
+            try
+            {
+                var quoteCode = $"WL-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid().ToString()[..8].ToUpperInvariant()}";
+
+                var payload = new
                 {
+                    quote_code = quoteCode,
+                    first_name = request.FirstName,
+                    last_name = request.LastName,
+                    email = request.Email,
+                    phone = request.Phone,
+                    branch = request.Branch,
+                    service = request.Service,
+                    message = request.Message,
+                    product_id = request.ProductId ?? "",
+                    status = "pending"
+                };
+
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                var response = await client.PostAsync("api/quote-requests", content);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errJson = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("Node API quote error: {Error}", errJson);
+                    ModelState.AddModelError("", "There was a problem submitting your quote request. Please try again.");
                     return View(request);
                 }
 
-                var quoteCode =
-                    $"WL-{DateTime.UtcNow:yyyyMMddHHmmss}-" +
-                    $"{Guid.NewGuid().ToString()[..8].ToUpperInvariant()}";
-
-                var quote = new SupabaseQuoteRequest
-                {
-                    QuoteCode = quoteCode,
-                    FirstName = request.FirstName,
-                    LastName = request.LastName,
-                    Email = request.Email,
-                    Phone = request.Phone,
-                    Branch = request.Branch,
-                    Service = request.Service,
-                    Message = request.Message,
-                    ProductId = request.ProductId ?? "",
-                    Status = "pending",
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                await _supabase
-                    .From<SupabaseQuoteRequest>()
-                    .Insert(quote);
-
                 TempData["QuoteCode"] = quoteCode;
-
                 return RedirectToAction(nameof(Confirmation));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error creating quote request");
-
-                ModelState.AddModelError(
-                    "",
-                    "There was a problem submitting your quote request. Please try again.");
-
+                ModelState.AddModelError("", "There was a problem submitting your quote request. Please try again.");
                 return View(request);
             }
         }

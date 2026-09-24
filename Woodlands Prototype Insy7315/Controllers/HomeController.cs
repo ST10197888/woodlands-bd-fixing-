@@ -1,104 +1,70 @@
 using Microsoft.AspNetCore.Mvc;
 using Woodlands_Prototype_Insy7315.Data;
 using Woodlands_Prototype_Insy7315.Models;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
+using System.Text.Json;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
 {
     public class HomeController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<HomeController> _logger;
+        private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public HomeController(
-            SupabaseClient supabase,
+            IHttpClientFactory httpClientFactory,
             ILogger<HomeController> logger)
         {
-            _supabase = supabase;
+            _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
 
         public async Task<IActionResult> Index()
         {
+            var vm = new HomeViewModel
+            {
+                HeroSlides = WoodLinkData.HeroSlides,
+                Categories = WoodLinkData.Categories,
+                FeaturedProducts = new List<Product>(),
+                TestimonialsSnippet = new List<Testimonial>()
+            };
+
             try
             {
-                var productsResponse = await _supabase
-                    .From<SupabaseProduct>()
-                    .Select("*")
-                    .Order("title", PostgrestConstants.Ordering.Ascending)
-                    .Get();
+                var client = _httpClientFactory.CreateClient("NodeApi");
 
-                var testimonialsResponse = await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Select("*")
-                    .Order("id", PostgrestConstants.Ordering.Ascending)
-                    .Get();
-
-                var products = productsResponse.Models
-                    .Select(p => new Product
-                    {
-                        Id = p.Id,
-                        Category = p.Category,
-                        Title = p.Title,
-                        Tagline = p.Tagline,
-                        Description = p.Description,
-                        Image = p.Image,
-                        GalleryJson = p.Gallery ?? "[]",
-                        FeaturesJson = p.Features ?? "[]",
-                        FinishesJson = p.Finishes ?? "[]",
-                        LeadTime = p.LeadTime,
-                        Tag = p.Tag,
-                        Price = p.Price
-                    })
-                    .ToList();
-
-                var testimonials = testimonialsResponse.Models
-                    .Select(t => new Testimonial
-                    {
-                        Id = t.Id,
-                        Name = t.Name,
-                        Role = t.Role,
-                        Location = t.Location,
-                        Rating = t.Rating,
-                        Review = t.Review,
-                        Project = t.Project
-                    })
-                    .ToList();
-
-                var vm = new HomeViewModel
+                // Fetch products
+                var productsResponse = await client.GetAsync("api/products");
+                if (productsResponse.IsSuccessStatusCode)
                 {
-                    HeroSlides = WoodLinkData.HeroSlides,
-                    Categories = WoodLinkData.Categories,
+                    var json = await productsResponse.Content.ReadAsStringAsync();
+                    var products = JsonSerializer.Deserialize<List<Product>>(json, _jsonOptions)
+                                   ?? new List<Product>();
 
-                    FeaturedProducts = products
+                    vm.FeaturedProducts = products
                         .Where(p => p.Tag == "Popular" || p.Tag == "New")
                         .Take(4)
-                        .ToList(),
+                        .ToList();
+                }
 
-                    TestimonialsSnippet = testimonials
-                        .Take(3)
-                        .ToList()
-                };
+                // Fetch testimonials
+                var testimonialsResponse = await client.GetAsync("api/testimonials");
+                if (testimonialsResponse.IsSuccessStatusCode)
+                {
+                    var json = await testimonialsResponse.Content.ReadAsStringAsync();
+                    var testimonials = JsonSerializer.Deserialize<List<Testimonial>>(json, _jsonOptions)
+                                       ?? new List<Testimonial>();
 
-                return View(vm);
+                    vm.TestimonialsSnippet = testimonials.Take(3).ToList();
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading homepage data from Supabase");
-
-                var vm = new HomeViewModel
-                {
-                    HeroSlides = WoodLinkData.HeroSlides,
-                    Categories = WoodLinkData.Categories,
-                    FeaturedProducts = new List<Product>(),
-                    TestimonialsSnippet = new List<Testimonial>()
-                };
-
+                _logger.LogError(ex, "Error loading homepage data from Node API");
                 TempData["Error"] = "Some homepage content could not be loaded.";
-
-                return View(vm);
             }
+
+            return View(vm);
         }
 
         public IActionResult About()

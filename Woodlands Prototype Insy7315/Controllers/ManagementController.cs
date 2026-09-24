@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
+using System.Text;
+using System.Text.Json;
 using Woodlands_Prototype_Insy7315.Models;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
@@ -9,117 +9,90 @@ namespace Woodlands_Prototype_Insy7315.Controllers
     [Authorize(Roles = "Admin,Manager (Soweto),Manager (Roodepoort),Manager (Randfontein)")]
     public class ManagementController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _http;
         private readonly ILogger<ManagementController> _logger;
+        private readonly JsonSerializerOptions _json = new() { PropertyNameCaseInsensitive = true };
 
-        public ManagementController(
-            SupabaseClient supabase,
-            ILogger<ManagementController> logger)
+        public ManagementController(IHttpClientFactory http, ILogger<ManagementController> logger)
         {
-            _supabase = supabase;
+            _http = http;
             _logger = logger;
         }
 
+        // PRODUCTS 
+
         public async Task<IActionResult> Products(string? category)
         {
+            var products = new List<Product>();
+            var allCategories = new List<string>();
+
             try
             {
-                var response = await _supabase
-                    .From<SupabaseProduct>()
-                    .Select("*")
-                    .Order("category", PostgrestConstants.Ordering.Ascending)
-                    .Order("title", PostgrestConstants.Ordering.Ascending)
-                    .Get();
-
-                var products = response.Models
-                    .Select(ToProduct)
-                    .ToList();
-
-                if (!string.IsNullOrWhiteSpace(category))
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/products");
+                if (res.IsSuccessStatusCode)
                 {
-                    products = products
-                        .Where(p => p.Category == category)
+                    var json = await res.Content.ReadAsStringAsync();
+                    products = JsonSerializer.Deserialize<List<Product>>(json, _json) ?? new();
+
+                    allCategories = products
+                        .Select(p => p.Category)
+                        .Where(c => !string.IsNullOrWhiteSpace(c))
+                        .Distinct()
+                        .OrderBy(c => c)
                         .ToList();
                 }
-
-                ViewBag.ActiveCategory = category;
-
-                ViewBag.Categories = response.Models
-                    .Select(p => p.Category)
-                    .Where(c => !string.IsNullOrWhiteSpace(c))
-                    .Distinct()
-                    .OrderBy(c => c)
-                    .ToList();
-
-                return View(products);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error loading management products");
-
-                ViewBag.ActiveCategory = category;
-                ViewBag.Categories = new List<string>();
-
-                return View(new List<Product>());
             }
+
+            if (!string.IsNullOrWhiteSpace(category))
+                products = products.Where(p => p.Category == category).ToList();
+
+            ViewBag.ActiveCategory = category;
+            ViewBag.Categories = allCategories;
+
+            return View(products);
         }
 
         [HttpGet]
-        public IActionResult CreateProduct()
-        {
-            return View("ProductForm", new ProductFormViewModel());
-        }
+        public IActionResult CreateProduct() => View("ProductForm", new ProductFormViewModel());
 
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> CreateProduct(ProductFormViewModel model)
         {
-            if (!ModelState.IsValid)
-            {
-                return View("ProductForm", model);
-            }
+            if (!ModelState.IsValid) return View("ProductForm", model);
 
             try
             {
-                var baseId = CreateSlug(model.Title);
-                var id = baseId;
-                var counter = 2;
-
-                while (await ProductExists(id))
+                var payload = new
                 {
-                    id = $"{baseId}-{counter++}";
-                }
-
-                var product = new SupabaseProduct
-                {
-                    Id = id,
-                    Category = model.Category,
-                    Title = model.Title,
-                    Tagline = model.Tagline,
-                    Description = model.Description,
-                    Image = model.Image,
-                    Gallery = WriteList(Lines(model.Gallery)),
-                    Features = WriteList(Lines(model.Features)),
-                    Finishes = WriteList(Lines(model.Finishes)),
-                    LeadTime = model.LeadTime,
-                    Tag = model.Tag,
-                    Price = model.Price
+                    category = model.Category,
+                    title = model.Title,
+                    tagline = model.Tagline,
+                    description = model.Description,
+                    image = model.Image,
+                    gallery = JsonSerializer.Serialize(Lines(model.Gallery)),
+                    features = JsonSerializer.Serialize(Lines(model.Features)),
+                    lead_time = model.LeadTime,
+                    tag = model.Tag,
+                    price = model.Price,
+                    is_from_price = model.IsFromPrice,
                 };
 
-                await _supabase
-                    .From<SupabaseProduct>()
-                    .Insert(product);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PostAsync("api/products", content);
 
                 return RedirectToAction(nameof(Products));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error creating product");
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to create the product.");
-
+                ModelState.AddModelError("", "Unable to create the product.");
                 return View("ProductForm", model);
             }
         }
@@ -127,38 +100,30 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         [HttpGet]
         public async Task<IActionResult> EditProduct(string id)
         {
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                return NotFound();
-            }
+            if (string.IsNullOrWhiteSpace(id)) return NotFound();
 
             try
             {
-                var response = await _supabase
-                    .From<SupabaseProduct>()
-                    .Where(p => p.Id == id)
-                    .Single();
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync($"api/products/{id}");
+                if (!res.IsSuccessStatusCode) return NotFound();
 
-                if (response == null)
-                {
-                    return NotFound();
-                }
+                var json = await res.Content.ReadAsStringAsync();
+                var product = JsonSerializer.Deserialize<Product>(json, _json);
+                if (product == null) return NotFound();
 
-                return View("ProductForm", ToForm(response));
+                return View("ProductForm", ToForm(product));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading product {ProductId}", id);
-
+                _logger.LogError(ex, "Error loading product {Id}", id);
                 return NotFound();
             }
         }
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> EditProduct(
-            string id,
-            ProductFormViewModel model)
+        public async Task<IActionResult> EditProduct(string id, ProductFormViewModel model)
         {
             if (!ModelState.IsValid)
             {
@@ -168,47 +133,46 @@ namespace Woodlands_Prototype_Insy7315.Controllers
 
             try
             {
-                var response = await _supabase
-                    .From<SupabaseProduct>()
-                    .Where(p => p.Id == id)
-                    .Single();
-
-                if (response == null)
+                var payload = new
                 {
-                    return NotFound();
+                    category = model.Category,
+                    title = model.Title,
+                    tagline = model.Tagline ?? "",
+                    description = model.Description ?? "",
+                    image = model.Image ?? "",
+                    lead_time = model.LeadTime ?? "",
+                    tag = model.Tag,
+                    price = model.Price,
+                    is_from_price = model.IsFromPrice,
+                    gallery = JsonSerializer.Serialize(Lines(model.Gallery)),
+                    features = JsonSerializer.Serialize(Lines(model.Features)),
+                    finishes = JsonSerializer.Serialize(Lines(model.Finishes))
+                };
+
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                var response = await client.PutAsync($"api/products/{id}", content);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errJson = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("Node API update error: {Error}", errJson);
+                    ModelState.AddModelError("", "Unable to update the product.");
+                    model.Id = id;
+                    return View("ProductForm", model);
                 }
-
-                response.Category = model.Category;
-                response.Title = model.Title;
-                response.Tagline = model.Tagline;
-                response.Description = model.Description;
-                response.Image = model.Image;
-                response.Gallery = WriteList(Lines(model.Gallery));
-                response.Features = WriteList(Lines(model.Features));
-                response.Finishes = WriteList(Lines(model.Finishes));
-                response.LeadTime = model.LeadTime;
-                response.Tag = model.Tag;
-                response.Price = model.Price;
-
-                await _supabase
-                    .From<SupabaseProduct>()
-                    .Update(response);
 
                 return RedirectToAction(nameof(Products));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating product {ProductId}", id);
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to update the product.");
-
+                _logger.LogError(ex, "Error updating product {Id}", id);
+                ModelState.AddModelError("", "Unable to update the product.");
                 model.Id = id;
-
                 return View("ProductForm", model);
             }
         }
+
 
         [HttpPost]
         [ValidateAntiForgeryToken]
@@ -216,99 +180,69 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseProduct>()
-                    .Where(p => p.Id == id)
-                    .Single();
-
-                if (response != null)
-                {
-                    await _supabase
-                        .From<SupabaseProduct>()
-                        .Delete(response);
-                }
+                var client = _http.CreateClient("NodeApi");
+                await client.DeleteAsync($"api/products/{id}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting product {ProductId}", id);
+                _logger.LogError(ex, "Error deleting product {Id}", id);
             }
 
             return RedirectToAction(nameof(Products));
         }
 
+        // SERVICES 
+
         public async Task<IActionResult> Services()
         {
+            var services = new List<Service>();
             try
             {
-                var response = await _supabase
-                    .From<SupabaseService>()
-                    .Select("*")
-                    .Order("name", PostgrestConstants.Ordering.Ascending)
-                    .Get();
-
-                var services = response.Models
-                    .Select(s => new Service
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        Description = s.Description,
-                        Image = s.Image,
-                        IsActive = s.IsActive
-                    })
-                    .ToList();
-
-                return View(services);
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/services");
+                if (res.IsSuccessStatusCode)
+                {
+                    var json = await res.Content.ReadAsStringAsync();
+                    services = JsonSerializer.Deserialize<List<Service>>(json, _json) ?? new();
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading management services");
-
-                return View(new List<Service>());
+                _logger.LogError(ex, "Error loading services");
             }
+
+            return View(services);
         }
 
         [HttpGet]
-        public IActionResult CreateService()
-        {
-            return View("ServiceForm", new Service
-            {
-                IsActive = true
-            });
-        }
+        public IActionResult CreateService() => View("ServiceForm", new Service { IsActive = true });
 
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> CreateService(Service model)
         {
-            if (!ModelState.IsValid)
-            {
-                return View("ServiceForm", model);
-            }
+            if (!ModelState.IsValid) return View("ServiceForm", model);
 
             try
             {
-                var service = new SupabaseService
+                var payload = new
                 {
-                    Name = model.Name,
-                    Description = model.Description,
-                    Image = model.Image,
-                    IsActive = model.IsActive
+                    name = model.Name,
+                    description = model.Description,
+                    image = model.Image,
+                    is_active = model.IsActive
                 };
 
-                await _supabase
-                    .From<SupabaseService>()
-                    .Insert(service);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PostAsync("api/services", content);
 
                 return RedirectToAction(nameof(Services));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error creating service");
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to create the service.");
-
+                ModelState.AddModelError("", "Unable to create the service.");
                 return View("ServiceForm", model);
             }
         }
@@ -318,78 +252,51 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.Id == id)
-                    .Single();
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/services");
+                if (!res.IsSuccessStatusCode) return NotFound();
 
-                if (response == null)
-                {
-                    return NotFound();
-                }
+                var json = await res.Content.ReadAsStringAsync();
+                var services = JsonSerializer.Deserialize<List<Service>>(json, _json) ?? new();
+                var service = services.FirstOrDefault(s => s.Id == id);
+                if (service == null) return NotFound();
 
-                return View("ServiceForm", new Service
-                {
-                    Id = response.Id,
-                    Name = response.Name,
-                    Description = response.Description,
-                    Image = response.Image,
-                    IsActive = response.IsActive
-                });
+                return View("ServiceForm", service);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading service {ServiceId}", id);
-
+                _logger.LogError(ex, "Error loading service {Id}", id);
                 return NotFound();
             }
         }
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> EditService(
-            int id,
-            Service model)
+        public async Task<IActionResult> EditService(int id, Service model)
         {
-            if (!ModelState.IsValid)
-            {
-                model.Id = id;
-                return View("ServiceForm", model);
-            }
+            if (!ModelState.IsValid) { model.Id = id; return View("ServiceForm", model); }
 
             try
             {
-                var response = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.Id == id)
-                    .Single();
-
-                if (response == null)
+                var payload = new
                 {
-                    return NotFound();
-                }
+                    name = model.Name,
+                    description = model.Description,
+                    image = model.Image,
+                    is_active = model.IsActive
+                };
 
-                response.Name = model.Name;
-                response.Description = model.Description;
-                response.Image = model.Image;
-                response.IsActive = model.IsActive;
-
-                await _supabase
-                    .From<SupabaseService>()
-                    .Update(response);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PutAsync($"api/services/{id}", content);
 
                 return RedirectToAction(nameof(Services));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating service {ServiceId}", id);
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to update the service.");
-
+                _logger.LogError(ex, "Error updating service {Id}", id);
+                ModelState.AddModelError("", "Unable to update the service.");
                 model.Id = id;
-
                 return View("ServiceForm", model);
             }
         }
@@ -400,111 +307,40 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseService>()
-                    .Where(s => s.Id == id)
-                    .Single();
-
-                if (response != null)
-                {
-                    await _supabase
-                        .From<SupabaseService>()
-                        .Delete(response);
-                }
+                var client = _http.CreateClient("NodeApi");
+                await client.DeleteAsync($"api/services/{id}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting service {ServiceId}", id);
+                _logger.LogError(ex, "Error deleting service {Id}", id);
             }
 
             return RedirectToAction(nameof(Services));
         }
 
-        private async Task<bool> ProductExists(string id)
-        {
-            var response = await _supabase
-                .From<SupabaseProduct>()
-                .Where(p => p.Id == id)
-                .Get();
+        // HELPERS
 
-            return response.Models.Any();
-        }
-
-        private static Product ToProduct(SupabaseProduct product)
+        private static ProductFormViewModel ToForm(Product product)
         {
-            return new Product
+            return new ProductFormViewModel
             {
                 Id = product.Id,
                 Category = product.Category,
                 Title = product.Title,
+                IsFromPrice = product.IsFromPrice,
                 Tagline = product.Tagline,
                 Description = product.Description,
                 Image = product.Image,
-                GalleryJson = product.Gallery ?? "[]",
-                FeaturesJson = product.Features ?? "[]",
-                FinishesJson = product.Finishes ?? "[]",
+                Gallery = string.Join(Environment.NewLine, product.Gallery),
+                Features = string.Join(Environment.NewLine, product.Features),
+                Finishes = string.Join(Environment.NewLine, product.Finishes),
                 LeadTime = product.LeadTime,
                 Tag = product.Tag,
                 Price = product.Price
             };
         }
 
-        private static ProductFormViewModel ToForm(SupabaseProduct product)
-        {
-            var mapped = ToProduct(product);
-
-            return new ProductFormViewModel
-            {
-                Id = mapped.Id,
-                Category = mapped.Category,
-                Title = mapped.Title,
-                Tagline = mapped.Tagline,
-                Description = mapped.Description,
-                Image = mapped.Image,
-                Gallery = string.Join(
-                    Environment.NewLine,
-                    mapped.Gallery),
-                Features = string.Join(
-                    Environment.NewLine,
-                    mapped.Features),
-                Finishes = string.Join(
-                    Environment.NewLine,
-                    mapped.Finishes),
-                LeadTime = mapped.LeadTime,
-                Tag = mapped.Tag,
-                Price = mapped.Price
-            };
-        }
-
-        private static List<string> Lines(string value)
-        {
-            return (value ?? "")
-                .Split(
-                    '\n',
-                    StringSplitOptions.RemoveEmptyEntries |
-                    StringSplitOptions.TrimEntries)
-                .ToList();
-        }
-
-        private static string WriteList(List<string> values)
-        {
-            return System.Text.Json.JsonSerializer.Serialize(
-                values ?? new List<string>());
-        }
-
-        private static string CreateSlug(string title)
-        {
-            var chars = (title ?? "")
-                .ToLowerInvariant()
-                .Select(c => char.IsLetterOrDigit(c) ? c : '-')
-                .ToArray();
-
-            return string.Join(
-                "-",
-                new string(chars)
-                    .Split(
-                        '-',
-                        StringSplitOptions.RemoveEmptyEntries));
-        }
+        private static List<string> Lines(string value) =>
+            (value ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     }
 }

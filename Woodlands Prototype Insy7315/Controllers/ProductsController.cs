@@ -1,179 +1,141 @@
 using Microsoft.AspNetCore.Mvc;
 using Woodlands_Prototype_Insy7315.Data;
 using Woodlands_Prototype_Insy7315.Models;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
+using System.Text.Json;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
 {
     public class ProductsController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ProductsController> _logger;
+        private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public ProductsController(
-            SupabaseClient supabase,
+            IHttpClientFactory httpClientFactory,
             ILogger<ProductsController> logger)
         {
-            _supabase = supabase;
+            _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
 
         public async Task<IActionResult> Index(string? category)
         {
+            var products = new List<Product>();
+
             try
             {
-                var response = await _supabase
-                    .From<SupabaseProduct>()
-                    .Select("*")
-                    .Order("category", PostgrestConstants.Ordering.Ascending)
-                    .Order("title", PostgrestConstants.Ordering.Ascending)
-                    .Get();
+                var client = _httpClientFactory.CreateClient("NodeApi");
+                var response = await client.GetAsync("api/products");
 
-                var products = response.Models
-                    .Select(ToProduct)
-                    .ToList();
-
-                string? activeCategoryLabel = null;
-
-                if (!string.IsNullOrWhiteSpace(category) &&
-                    WoodLinkData.SlugToCategory.TryGetValue(category, out var label))
+                if (response.IsSuccessStatusCode)
                 {
-                    activeCategoryLabel = label;
+                    var json = await response.Content.ReadAsStringAsync();
+                    products = JsonSerializer.Deserialize<List<Product>>(json, _jsonOptions) ?? new List<Product>();
                 }
-
-                var filteredProducts = activeCategoryLabel == null
-                    ? products
-                    : products
-                        .Where(p => p.Category == activeCategoryLabel)
-                        .ToList();
-
-                var categories = WoodLinkData.Categories
-                    .Select(c => new ProductCategory
-                    {
-                        Id = c.Id,
-                        Label = c.Label,
-                        Image = c.Image,
-                        Slug = c.Slug,
-                        Description = c.Description,
-                        Count = products.Count(p => p.Category == c.Id)
-                    })
-                    .ToList();
-
-                var subtitle = activeCategoryLabel == null
-                    ? "Browse our full range of custom-built units and board services."
-                    : categories
-                        .FirstOrDefault(c => c.Id == activeCategoryLabel)
-                        ?.Description ?? "";
-
-                var vm = new ProductsIndexViewModel
+                else
                 {
-                    ActiveCategory = activeCategoryLabel,
-                    PageSubtitle = subtitle,
-                    Products = filteredProducts,
-                    Categories = categories,
-                    TotalProductCount = products.Count
-                };
-
-                return View(vm);
+                    _logger.LogError("Node API returned {StatusCode} for products", response.StatusCode);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading products from Supabase");
-
+                _logger.LogError(ex, "Error loading products from Node API");
                 TempData["Error"] = "Unable to load products.";
-
-                var emptyVm = new ProductsIndexViewModel
-                {
-                    ActiveCategory = null,
-                    PageSubtitle = "Browse our full range of custom-built units and board services.",
-                    Products = new List<Product>(),
-                    Categories = WoodLinkData.Categories
-                        .Select(c => new ProductCategory
-                        {
-                            Id = c.Id,
-                            Label = c.Label,
-                            Image = c.Image,
-                            Slug = c.Slug,
-                            Description = c.Description,
-                            Count = 0
-                        })
-                        .ToList(),
-                    TotalProductCount = 0
-                };
-
-                return View(emptyVm);
             }
+
+            // -- Everything below this line stays identical to your existing code --
+
+            string? activeCategoryLabel = null;
+
+            if (!string.IsNullOrWhiteSpace(category) &&
+                WoodLinkData.SlugToCategory.TryGetValue(category, out var label))
+            {
+                activeCategoryLabel = label;
+            }
+
+            var filteredProducts = activeCategoryLabel == null
+                ? products
+                : products.Where(p => p.Category == activeCategoryLabel).ToList();
+
+            var categories = WoodLinkData.Categories
+                .Select(c => new ProductCategory
+                {
+                    Id = c.Id,
+                    Label = c.Label,
+                    Image = c.Image,
+                    Slug = c.Slug,
+                    Description = c.Description,
+                    Count = products.Count(p => p.Category == c.Id)
+                })
+                .ToList();
+
+            var subtitle = activeCategoryLabel == null
+                ? "Browse our full range of custom-built units and board services."
+                : categories.FirstOrDefault(c => c.Id == activeCategoryLabel)?.Description ?? "";
+
+            var vm = new ProductsIndexViewModel
+            {
+                ActiveCategory = activeCategoryLabel,
+                PageSubtitle = subtitle,
+                Products = filteredProducts,
+                Categories = categories,
+                TotalProductCount = products.Count
+            };
+
+            return View(vm);
         }
 
         public async Task<IActionResult> Details(string id)
         {
             if (string.IsNullOrWhiteSpace(id))
-            {
                 return RedirectToAction(nameof(Index));
-            }
+
+            Product? product = null;
+            var related = new List<Product>();
 
             try
             {
-                var response = await _supabase
-                    .From<SupabaseProduct>()
-                    .Where(p => p.Id == id)
-                    .Single();
+                var client = _httpClientFactory.CreateClient("NodeApi");
 
-                if (response == null)
+                // Get the product
+                var response = await client.GetAsync($"api/products/{id}");
+                if (response.IsSuccessStatusCode)
                 {
-                    return RedirectToAction(nameof(Index));
+                    var json = await response.Content.ReadAsStringAsync();
+                    product = JsonSerializer.Deserialize<Product>(json, _jsonOptions);
                 }
 
-                var product = ToProduct(response);
+                if (product == null)
+                    return RedirectToAction(nameof(Index));
 
-                var relatedResponse = await _supabase
-                    .From<SupabaseProduct>()
-                    .Where(p => p.Category == product.Category)
-                    .Order("title", PostgrestConstants.Ordering.Ascending)
-                    .Get();
-
-                var related = relatedResponse.Models
-                    .Where(p => p.Id != product.Id)
-                    .Take(3)
-                    .Select(ToProduct)
-                    .ToList();
-
-                var vm = new ProductDetailViewModel
+                // Get related products (same category)
+                var allResponse = await client.GetAsync("api/products");
+                if (allResponse.IsSuccessStatusCode)
                 {
-                    Product = product,
-                    CategorySlug = WoodLinkData.CategoryToSlug
-                        .GetValueOrDefault(product.Category, ""),
-                    Related = related
-                };
+                    var allJson = await allResponse.Content.ReadAsStringAsync();
+                    var allProducts = JsonSerializer.Deserialize<List<Product>>(allJson, _jsonOptions) ?? new List<Product>();
 
-                return View(vm);
+                    related = allProducts
+                        .Where(p => p.Category == product.Category && p.Id != product.Id)
+                        .Take(3)
+                        .ToList();
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading product {ProductId}", id);
-
+                _logger.LogError(ex, "Error loading product {ProductId} from Node API", id);
                 return RedirectToAction(nameof(Index));
             }
-        }
 
-        private static Product ToProduct(SupabaseProduct product)
-        {
-            return new Product
+            var vm = new ProductDetailViewModel
             {
-                Id = product.Id,
-                Category = product.Category,
-                Title = product.Title,
-                Tagline = product.Tagline,
-                Description = product.Description,
-                Image = product.Image,
-                GalleryJson = product.Gallery ?? "[]",
-                FeaturesJson = product.Features ?? "[]",
-                FinishesJson = product.Finishes ?? "[]",
-                LeadTime = product.LeadTime,
-                Tag = product.Tag,
-                Price = product.Price
+                Product = product,
+                CategorySlug = WoodLinkData.CategoryToSlug.GetValueOrDefault(product.Category, ""),
+                Related = related
             };
+
+            return View(vm);
         }
     }
 }

@@ -1,20 +1,20 @@
 using Microsoft.AspNetCore.Mvc;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
 using Woodlands_Prototype_Insy7315.Models;
+using System.Text.Json;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
 {
     public class FAQsController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<FAQsController> _logger;
+        private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public FAQsController(
-            SupabaseClient supabase,
+            IHttpClientFactory httpClientFactory,
             ILogger<FAQsController> logger)
         {
-            _supabase = supabase;
+            _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
 
@@ -22,33 +22,24 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Select("*")
-                    .Order("category", PostgrestConstants.Ordering.Ascending)
-                    .Order("id", PostgrestConstants.Ordering.Ascending)
-                    .Get();
+                var client = _httpClientFactory.CreateClient("NodeApi");
+                var response = await client.GetAsync("api/faqs");
 
-                var faqs = response.Models
-                    .Select(f => new FaqItem
-                    {
-                        Id = f.Id,
-                        Category = f.Category,
-                        Question = f.Question,
-                        Answer = f.Answer
-                    })
-                    .ToList();
-
-                return View(faqs);
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var faqs = JsonSerializer.Deserialize<List<FaqItem>>(json, _jsonOptions)
+                               ?? new List<FaqItem>();
+                    return View(faqs);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading FAQs from Supabase");
-
+                _logger.LogError(ex, "Error loading FAQs from Node API");
                 TempData["Error"] = "Unable to load FAQs.";
-
-                return View(new List<FaqItem>());
             }
+
+            return View(new List<FaqItem>());
         }
     }
 }

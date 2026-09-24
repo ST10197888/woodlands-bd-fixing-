@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using PostgrestConstants = Supabase.Postgrest.Constants;
-using SupabaseClient = Supabase.Client;
+using System.Text;
+using System.Text.Json;
 using Woodlands_Prototype_Insy7315.Models;
 
 namespace Woodlands_Prototype_Insy7315.Controllers
@@ -9,140 +9,118 @@ namespace Woodlands_Prototype_Insy7315.Controllers
     [Authorize(Roles = "Admin")]
     public class AdminController : Controller
     {
-        private readonly SupabaseClient _supabase;
+        private readonly IHttpClientFactory _http;
         private readonly ILogger<AdminController> _logger;
+        private readonly JsonSerializerOptions _json = new() { PropertyNameCaseInsensitive = true };
 
-        public AdminController(
-            SupabaseClient supabase,
-            ILogger<AdminController> logger)
+        public AdminController(IHttpClientFactory http, ILogger<AdminController> logger)
         {
-            _supabase = supabase;
+            _http = http;
             _logger = logger;
         }
 
-        // Users
+        // ==================== USERS ====================
 
         public async Task<IActionResult> Users()
         {
+            var rows = new List<AdminUserRowViewModel>();
             try
             {
-                var response = await _supabase
-                    .From<SupabaseAppUser>()
-                    .Select("*")
-                    .Order(
-                        "full_name",
-                        PostgrestConstants.Ordering.Ascending)
-                    .Get();
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/app-users");
+                if (res.IsSuccessStatusCode)
+                {
+                    var json = await res.Content.ReadAsStringAsync();
+                    var users = JsonSerializer.Deserialize<List<AppUser>>(json, _json) ?? new();
 
-                var rows = response.Models
-                    .Select(user => new AdminUserRowViewModel
+                    rows = users.Select(u => new AdminUserRowViewModel
                     {
-                        Id = user.Id,
-                        FullName = user.FullName,
-                        Email = user.Email,
-                        PhoneNumber = user.Phone,
-                        Role = string.IsNullOrWhiteSpace(user.Role)
-                            ? "Customer"
-                            : user.Role,
-                        Branch = user.Branch,
-                        Active = user.Active
-                    })
-                    .ToList();
-
-                return View(rows);
+                        Id = u.Id,
+                        FullName = u.FullName,
+                        Email = u.Email,
+                        PhoneNumber = u.Phone,
+                        Role = string.IsNullOrWhiteSpace(u.Role) ? "Customer" : u.Role,
+                        Branch = u.Branch,
+                        Active = u.Active
+                    }).ToList();
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error loading Supabase users");
-
-                TempData["AdminError"] =
-                    "Unable to load user accounts.";
-
-                return View(new List<AdminUserRowViewModel>());
+                _logger.LogError(ex, "Error loading users");
+                TempData["AdminError"] = "Unable to load user accounts.";
             }
+            return View(rows);
         }
 
         [HttpGet]
-        public IActionResult CreateUser()
-        {
-            return View(
-                "UserForm",
-                new UserFormViewModel
-                {
-                    Role = "Customer",
-                    Active = true
-                });
-        }
+        public IActionResult CreateUser() => View("UserForm", new UserFormViewModel { Role = "Customer", Active = true });
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> CreateUser(
-            UserFormViewModel model)
+        public async Task<IActionResult> CreateUser(UserFormViewModel model)
         {
             if (string.IsNullOrWhiteSpace(model.Password))
-            {
-                ModelState.AddModelError(
-                    nameof(model.Password),
-                    "A password is required when creating a user.");
-            }
+                ModelState.AddModelError(nameof(model.Password), "A password is required when creating a user.");
 
             if (!IdentitySeederRoles.All.Contains(model.Role))
-            {
-                ModelState.AddModelError(
-                    nameof(model.Role),
-                    "Invalid role.");
-            }
+                ModelState.AddModelError(nameof(model.Role), "Invalid role.");
 
-            if (!ModelState.IsValid)
-            {
-                return View("UserForm", model);
-            }
+            if (!ModelState.IsValid) return View("UserForm", model);
 
             try
             {
-                var session = await _supabase.Auth.SignUp(
-                    email: model.Email,
-                    password: model.Password!);
-
-                if (session?.User == null)
+                // Register via Node API
+                var registerPayload = new
                 {
-                    ModelState.AddModelError(
-                        "",
-                        "Unable to create the Supabase account.");
+                    fullName = model.FullName,
+                    email = model.Email,
+                    password = model.Password,
+                    phone = model.PhoneNumber ?? ""
+                };
 
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(registerPayload), Encoding.UTF8, "application/json");
+                var res = await client.PostAsync("api/auth/register", content);
+
+                if (!res.IsSuccessStatusCode)
+                {
+                    var errJson = await res.Content.ReadAsStringAsync();
+                    ModelState.AddModelError("", GetUserFriendlyError(errJson));
                     return View("UserForm", model);
                 }
 
-                var appUser = new SupabaseAppUser
+                // If role/branch differs from Customer, update the app_users row via a second call
+                if (model.Role != "Customer" || !model.Active || !string.IsNullOrWhiteSpace(model.Branch))
                 {
-                    Id = session!.User!.Id.ToString(),
-                    FullName = model.FullName,
-                    Email = model.Email,
-                    Phone = model.PhoneNumber ?? "",
-                    Role = model.Role,
-                    Branch = string.IsNullOrWhiteSpace(model.Branch)
-                        ? null
-                        : model.Branch,
-                    Active = model.Active,
-                    CreatedAt = DateTime.UtcNow
-                };
+                    // Find the newly-created user
+                    var listRes = await client.GetAsync("api/app-users");
+                    if (listRes.IsSuccessStatusCode)
+                    {
+                        var listJson = await listRes.Content.ReadAsStringAsync();
+                        var users = JsonSerializer.Deserialize<List<AppUser>>(listJson, _json) ?? new();
+                        var created = users.FirstOrDefault(u => u.Email.Equals(model.Email, StringComparison.OrdinalIgnoreCase));
 
-                await _supabase
-                    .From<SupabaseAppUser>()
-                    .Insert(appUser);
+                        if (created != null)
+                        {
+                            var updatePayload = new
+                            {
+                                role = model.Role,
+                                branch = model.Branch,
+                                active = model.Active
+                            };
+                            var upContent = new StringContent(JsonSerializer.Serialize(updatePayload), Encoding.UTF8, "application/json");
+                            await client.PutAsync($"api/app-users/{created.Id}", upContent);
+                        }
+                    }
+                }
 
                 return RedirectToAction(nameof(Users));
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error creating Supabase user");
-
-                ModelState.AddModelError(
-                    "",
-                    GetUserFriendlyError(ex));
-
+                _logger.LogError(ex, "Error creating user");
+                ModelState.AddModelError("", "The user account could not be created.");
                 return View("UserForm", model);
             }
         }
@@ -150,108 +128,69 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         [HttpGet]
         public async Task<IActionResult> EditUser(string id)
         {
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                return NotFound();
-            }
+            if (string.IsNullOrWhiteSpace(id)) return NotFound();
 
             try
             {
-                var user = await _supabase
-                    .From<SupabaseAppUser>()
-                    .Where(u => u.Id == id)
-                    .Single();
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/app-users");
+                if (!res.IsSuccessStatusCode) return NotFound();
 
-                if (user == null)
+                var json = await res.Content.ReadAsStringAsync();
+                var users = JsonSerializer.Deserialize<List<AppUser>>(json, _json) ?? new();
+                var user = users.FirstOrDefault(u => u.Id == id);
+                if (user == null) return NotFound();
+
+                return View("UserForm", new UserFormViewModel
                 {
-                    return NotFound();
-                }
-
-                return View(
-                    "UserForm",
-                    new UserFormViewModel
-                    {
-                        Id = user.Id,
-                        FullName = user.FullName,
-                        Email = user.Email,
-                        PhoneNumber = user.Phone,
-                        Role = string.IsNullOrWhiteSpace(user.Role)
-                            ? "Customer"
-                            : user.Role,
-                        Branch = user.Branch,
-                        Active = user.Active
-                    });
+                    Id = user.Id,
+                    FullName = user.FullName,
+                    Email = user.Email,
+                    PhoneNumber = user.Phone,
+                    Role = string.IsNullOrWhiteSpace(user.Role) ? "Customer" : user.Role,
+                    Branch = user.Branch,
+                    Active = user.Active
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error loading Supabase user {UserId}",
-                    id);
-
+                _logger.LogError(ex, "Error loading user {Id}", id);
                 return NotFound();
             }
         }
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> EditUser(
-            string id,
-            UserFormViewModel model)
+        public async Task<IActionResult> EditUser(string id, UserFormViewModel model)
         {
             if (!IdentitySeederRoles.All.Contains(model.Role))
-            {
-                ModelState.AddModelError(
-                    nameof(model.Role),
-                    "Invalid role.");
-            }
+                ModelState.AddModelError(nameof(model.Role), "Invalid role.");
 
-            if (!ModelState.IsValid)
-            {
-                model.Id = id;
-                return View("UserForm", model);
-            }
+            if (!ModelState.IsValid) { model.Id = id; return View("UserForm", model); }
 
             try
             {
-                var user = await _supabase
-                    .From<SupabaseAppUser>()
-                    .Where(u => u.Id == id)
-                    .Single();
-
-                if (user == null)
+                var payload = new
                 {
-                    return NotFound();
-                }
+                    full_name = model.FullName,
+                    email = model.Email,
+                    phone = model.PhoneNumber ?? "",
+                    role = model.Role,
+                    branch = model.Branch,
+                    active = model.Active
+                };
 
-                user.FullName = model.FullName;
-                user.Email = model.Email;
-                user.Phone = model.PhoneNumber ?? "";
-                user.Role = model.Role;
-                user.Branch = string.IsNullOrWhiteSpace(model.Branch)
-                    ? null
-                    : model.Branch;
-                user.Active = model.Active;
-
-                await _supabase
-                    .From<SupabaseAppUser>()
-                    .Update(user);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PutAsync($"api/app-users/{id}", content);
 
                 return RedirectToAction(nameof(Users));
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error updating Supabase user {UserId}",
-                    id);
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to update the user account.");
-
+                _logger.LogError(ex, "Error updating user {Id}", id);
+                ModelState.AddModelError("", "Unable to update the user account.");
                 model.Id = id;
-
                 return View("UserForm", model);
             }
         }
@@ -260,131 +199,83 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> DeleteUser(string id)
         {
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                return RedirectToAction(nameof(Users));
-            }
+            if (string.IsNullOrWhiteSpace(id)) return RedirectToAction(nameof(Users));
 
-            var currentUserId =
-                User.FindFirst(
-                    System.Security.Claims.ClaimTypes.NameIdentifier)
-                ?.Value;
-
+            var currentUserId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
             if (id == currentUserId)
             {
-                TempData["AdminError"] =
-                    "You cannot delete the account you are currently using.";
-
+                TempData["AdminError"] = "You cannot delete the account you are currently using.";
                 return RedirectToAction(nameof(Users));
             }
 
             try
             {
-                var user = await _supabase
-                    .From<SupabaseAppUser>()
-                    .Where(u => u.Id == id)
-                    .Single();
-
-                if (user != null)
-                {
-                    await _supabase
-                        .From<SupabaseAppUser>()
-                        .Delete(user);
-                }
+                var client = _http.CreateClient("NodeApi");
+                await client.DeleteAsync($"api/app-users/{id}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error deleting Supabase user {UserId}",
-                    id);
-
-                TempData["AdminError"] =
-                    "Unable to delete the user account.";
+                _logger.LogError(ex, "Error deleting user {Id}", id);
+                TempData["AdminError"] = "Unable to delete the user account.";
             }
 
             return RedirectToAction(nameof(Users));
         }
 
-        // Testimonials
+        // ==================== TESTIMONIALS ====================
 
         public async Task<IActionResult> Testimonials()
         {
+            var testimonials = new List<Testimonial>();
             try
             {
-                var response = await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Select("*")
-                    .Order(
-                        "id",
-                        PostgrestConstants.Ordering.Descending)
-                    .Get();
-
-                var testimonials = response.Models
-                    .Select(ToTestimonial)
-                    .ToList();
-
-                return View(testimonials);
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/testimonials");
+                if (res.IsSuccessStatusCode)
+                {
+                    var json = await res.Content.ReadAsStringAsync();
+                    testimonials = JsonSerializer.Deserialize<List<Testimonial>>(json, _json) ?? new();
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error loading admin testimonials");
-
-                TempData["AdminError"] =
-                    "Unable to load testimonials.";
-
-                return View(new List<Testimonial>());
+                _logger.LogError(ex, "Error loading testimonials");
+                TempData["AdminError"] = "Unable to load testimonials.";
             }
+            return View(testimonials);
         }
 
         [HttpGet]
-        public IActionResult CreateTestimonial()
-        {
-            return View(
-                "TestimonialForm",
-                new TestimonialFormViewModel());
-        }
+        public IActionResult CreateTestimonial() => View("TestimonialForm", new TestimonialFormViewModel());
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> CreateTestimonial(
-            TestimonialFormViewModel model)
+        public async Task<IActionResult> CreateTestimonial(TestimonialFormViewModel model)
         {
-            if (!ModelState.IsValid)
-            {
-                return View("TestimonialForm", model);
-            }
+            if (!ModelState.IsValid) return View("TestimonialForm", model);
 
             try
             {
-                var testimonial = new SupabaseTestimonial
+                var payload = new
                 {
-                    Name = model.Name,
-                    Role = model.Role,
-                    Location = model.Location,
-                    Rating = model.Rating,
-                    Review = model.Review,
-                    Project = model.Project
+                    name = model.Name,
+                    role = model.Role,
+                    location = model.Location,
+                    rating = model.Rating,
+                    review = model.Review,
+                    project = model.Project
                 };
 
-                await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Insert(testimonial);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PostAsync("api/testimonials", content);
 
                 return RedirectToAction(nameof(Testimonials));
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error creating testimonial");
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to create the testimonial.");
-
+                _logger.LogError(ex, "Error creating testimonial");
+                ModelState.AddModelError("", "Unable to create the testimonial.");
                 return View("TestimonialForm", model);
             }
         }
@@ -394,90 +285,62 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var response = await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Where(t => t.Id == id)
-                    .Single();
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/testimonials");
+                if (!res.IsSuccessStatusCode) return NotFound();
 
-                if (response == null)
+                var json = await res.Content.ReadAsStringAsync();
+                var list = JsonSerializer.Deserialize<List<Testimonial>>(json, _json) ?? new();
+                var t = list.FirstOrDefault(x => x.Id == id);
+                if (t == null) return NotFound();
+
+                return View("TestimonialForm", new TestimonialFormViewModel
                 {
-                    return NotFound();
-                }
-
-                return View(
-                    "TestimonialForm",
-                    new TestimonialFormViewModel
-                    {
-                        Id = response.Id,
-                        Name = response.Name,
-                        Role = response.Role,
-                        Location = response.Location,
-                        Rating = response.Rating,
-                        Review = response.Review,
-                        Project = response.Project
-                    });
+                    Id = t.Id,
+                    Name = t.Name,
+                    Role = t.Role,
+                    Location = t.Location,
+                    Rating = t.Rating,
+                    Review = t.Review,
+                    Project = t.Project
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error loading testimonial {TestimonialId}",
-                    id);
-
+                _logger.LogError(ex, "Error loading testimonial {Id}", id);
                 return NotFound();
             }
         }
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> EditTestimonial(
-            int id,
-            TestimonialFormViewModel model)
+        public async Task<IActionResult> EditTestimonial(int id, TestimonialFormViewModel model)
         {
-            if (!ModelState.IsValid)
-            {
-                model.Id = id;
-                return View("TestimonialForm", model);
-            }
+            if (!ModelState.IsValid) { model.Id = id; return View("TestimonialForm", model); }
 
             try
             {
-                var testimonial = await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Where(t => t.Id == id)
-                    .Single();
-
-                if (testimonial == null)
+                var payload = new
                 {
-                    return NotFound();
-                }
+                    name = model.Name,
+                    role = model.Role,
+                    location = model.Location,
+                    rating = model.Rating,
+                    review = model.Review,
+                    project = model.Project
+                };
 
-                testimonial.Name = model.Name;
-                testimonial.Role = model.Role;
-                testimonial.Location = model.Location;
-                testimonial.Rating = model.Rating;
-                testimonial.Review = model.Review;
-                testimonial.Project = model.Project;
-
-                await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Update(testimonial);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PutAsync($"api/testimonials/{id}", content);
 
                 return RedirectToAction(nameof(Testimonials));
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error updating testimonial {TestimonialId}",
-                    id);
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to update the testimonial.");
-
+                _logger.LogError(ex, "Error updating testimonial {Id}", id);
+                ModelState.AddModelError("", "Unable to update the testimonial.");
                 model.Id = id;
-
                 return View("TestimonialForm", model);
             }
         }
@@ -488,108 +351,62 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var testimonial = await _supabase
-                    .From<SupabaseTestimonial>()
-                    .Where(t => t.Id == id)
-                    .Single();
+                var client = _http.CreateClient("NodeApi");
+                await client.DeleteAsync($"api/testimonials/{id}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting testimonial {Id}", id);
+            }
+            return RedirectToAction(nameof(Testimonials));
+        }
 
-                if (testimonial != null)
+        // ==================== FAQS ====================
+
+        public async Task<IActionResult> Faqs()
+        {
+            var faqs = new List<FaqItem>();
+            try
+            {
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/faqs");
+                if (res.IsSuccessStatusCode)
                 {
-                    await _supabase
-                        .From<SupabaseTestimonial>()
-                        .Delete(testimonial);
+                    var json = await res.Content.ReadAsStringAsync();
+                    faqs = JsonSerializer.Deserialize<List<FaqItem>>(json, _json) ?? new();
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error deleting testimonial {TestimonialId}",
-                    id);
+                _logger.LogError(ex, "Error loading FAQs");
+                TempData["AdminError"] = "Unable to load FAQs.";
             }
-
-            return RedirectToAction(nameof(Testimonials));
-        }
-
-        // FAQs
-
-        public async Task<IActionResult> Faqs()
-        {
-            try
-            {
-                var response = await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Select("*")
-                    .Order(
-                        "category",
-                        PostgrestConstants.Ordering.Ascending)
-                    .Order(
-                        "id",
-                        PostgrestConstants.Ordering.Ascending)
-                    .Get();
-
-                var faqs = response.Models
-                    .Select(ToFaq)
-                    .ToList();
-
-                return View(faqs);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Error loading admin FAQs");
-
-                TempData["AdminError"] =
-                    "Unable to load FAQs.";
-
-                return View(new List<FaqItem>());
-            }
+            return View(faqs);
         }
 
         [HttpGet]
-        public IActionResult CreateFaq()
-        {
-            return View(
-                "FaqForm",
-                new FaqFormViewModel());
-        }
+        public IActionResult CreateFaq() => View("FaqForm", new FaqFormViewModel());
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> CreateFaq(
-            FaqFormViewModel model)
+        public async Task<IActionResult> CreateFaq(FaqFormViewModel model)
         {
-            if (!ModelState.IsValid)
-            {
-                return View("FaqForm", model);
-            }
+            if (!ModelState.IsValid) return View("FaqForm", model);
 
             try
             {
-                var faq = new SupabaseFaqItem
-                {
-                    Category = model.Category,
-                    Question = model.Question,
-                    Answer = model.Answer
-                };
+                var payload = new { category = model.Category, question = model.Question, answer = model.Answer };
 
-                await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Insert(faq);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PostAsync("api/faqs", content);
 
                 return RedirectToAction(nameof(Faqs));
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error creating FAQ");
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to create the FAQ.");
-
+                _logger.LogError(ex, "Error creating FAQ");
+                ModelState.AddModelError("", "Unable to create the FAQ.");
                 return View("FaqForm", model);
             }
         }
@@ -599,84 +416,51 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var faq = await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Where(f => f.Id == id)
-                    .Single();
+                var client = _http.CreateClient("NodeApi");
+                var res = await client.GetAsync("api/faqs");
+                if (!res.IsSuccessStatusCode) return NotFound();
 
-                if (faq == null)
+                var json = await res.Content.ReadAsStringAsync();
+                var list = JsonSerializer.Deserialize<List<FaqItem>>(json, _json) ?? new();
+                var f = list.FirstOrDefault(x => x.Id == id);
+                if (f == null) return NotFound();
+
+                return View("FaqForm", new FaqFormViewModel
                 {
-                    return NotFound();
-                }
-
-                return View(
-                    "FaqForm",
-                    new FaqFormViewModel
-                    {
-                        Id = faq.Id,
-                        Category = faq.Category,
-                        Question = faq.Question,
-                        Answer = faq.Answer
-                    });
+                    Id = f.Id,
+                    Category = f.Category,
+                    Question = f.Question,
+                    Answer = f.Answer
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error loading FAQ {FaqId}",
-                    id);
-
+                _logger.LogError(ex, "Error loading FAQ {Id}", id);
                 return NotFound();
             }
         }
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> EditFaq(
-            int id,
-            FaqFormViewModel model)
+        public async Task<IActionResult> EditFaq(int id, FaqFormViewModel model)
         {
-            if (!ModelState.IsValid)
-            {
-                model.Id = id;
-                return View("FaqForm", model);
-            }
+            if (!ModelState.IsValid) { model.Id = id; return View("FaqForm", model); }
 
             try
             {
-                var faq = await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Where(f => f.Id == id)
-                    .Single();
+                var payload = new { category = model.Category, question = model.Question, answer = model.Answer };
 
-                if (faq == null)
-                {
-                    return NotFound();
-                }
-
-                faq.Category = model.Category;
-                faq.Question = model.Question;
-                faq.Answer = model.Answer;
-
-                await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Update(faq);
+                var client = _http.CreateClient("NodeApi");
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                await client.PutAsync($"api/faqs/{id}", content);
 
                 return RedirectToAction(nameof(Faqs));
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error updating FAQ {FaqId}",
-                    id);
-
-                ModelState.AddModelError(
-                    "",
-                    "Unable to update the FAQ.");
-
+                _logger.LogError(ex, "Error updating FAQ {Id}", id);
+                ModelState.AddModelError("", "Unable to update the FAQ.");
                 model.Id = id;
-
                 return View("FaqForm", model);
             }
         }
@@ -687,78 +471,35 @@ namespace Woodlands_Prototype_Insy7315.Controllers
         {
             try
             {
-                var faq = await _supabase
-                    .From<SupabaseFaqItem>()
-                    .Where(f => f.Id == id)
-                    .Single();
-
-                if (faq != null)
-                {
-                    await _supabase
-                        .From<SupabaseFaqItem>()
-                        .Delete(faq);
-                }
+                var client = _http.CreateClient("NodeApi");
+                await client.DeleteAsync($"api/faqs/{id}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error deleting FAQ {FaqId}",
-                    id);
+                _logger.LogError(ex, "Error deleting FAQ {Id}", id);
             }
-
             return RedirectToAction(nameof(Faqs));
         }
 
-        private static Testimonial ToTestimonial(
-            SupabaseTestimonial testimonial)
+        private static string GetUserFriendlyError(string errorJson)
         {
-            return new Testimonial
+            try
             {
-                Id = testimonial.Id,
-                Name = testimonial.Name,
-                Role = testimonial.Role,
-                Location = testimonial.Location,
-                Rating = testimonial.Rating,
-                Review = testimonial.Review,
-                Project = testimonial.Project
-            };
-        }
+                var err = JsonSerializer.Deserialize<ErrorResponse>(errorJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var message = (err?.Error ?? "").ToLowerInvariant();
 
-        private static FaqItem ToFaq(
-            SupabaseFaqItem faq)
-        {
-            return new FaqItem
-            {
-                Id = faq.Id,
-                Category = faq.Category,
-                Question = faq.Question,
-                Answer = faq.Answer
-            };
-        }
-
-        private static string GetUserFriendlyError(Exception ex)
-        {
-            var message = ex.Message.ToLowerInvariant();
-
-            if (message.Contains("already registered") ||
-                message.Contains("already exists"))
-            {
-                return "An account with this email address already exists.";
+                if (message.Contains("already registered") || message.Contains("already exists"))
+                    return "An account with this email address already exists.";
+                if (message.Contains("password"))
+                    return "The password does not meet the required requirements.";
+                if (message.Contains("email"))
+                    return "Please enter a valid email address.";
             }
-
-            if (message.Contains("password"))
-            {
-                return "The password does not meet the required requirements.";
-            }
-
-            if (message.Contains("email"))
-            {
-                return "Please enter a valid email address.";
-            }
-
+            catch { }
             return "The user account could not be created.";
         }
+
+        private class ErrorResponse { public string? Error { get; set; } }
     }
 
     public class AdminUserRowViewModel
